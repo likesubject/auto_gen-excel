@@ -1,0 +1,6 @@
+Jinja2==2.11.2
+pywin32
+pytest
+python-redmine
+click
+PyInstaller

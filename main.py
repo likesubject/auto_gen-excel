@@ -7,6 +7,7 @@ import contextlib
 from collections import OrderedDict
 from jinja2 import Template
 from redminelib import Redmine
+from datetime import date
 
 
 class Task(object):
@@ -16,11 +17,22 @@ class Task(object):
         self.child_tasks = []
         self.progress = progress  # 0-100
         self.status = status
-        self.start_time = start_time
-        self.end_time = end_time
+        date_template = '{year}年{month}月{day}日'
+        if isinstance(start_time, date):
+            self.start_time = date_template.format(year=start_time.year, month=start_time.month, day=start_time.day)
+        else:
+            self.start_time = start_time
+        if isinstance(end_time, date):
+            self.end_time = date_template.format(year=end_time.year, month=end_time.month, day=end_time.day)
+        else:
+            self.end_time = end_time
 
     def have_child_tasks(self):
         return bool(len(self.child_tasks))
+
+    def append_task(self, task):
+        self.child_tasks.append(task)
+        return self
 
 
 class Project(object):
@@ -31,11 +43,112 @@ class Project(object):
 
     def append_task(self, task):
         self.tasks.append(task)
+        return self
+
+    def extend_task(self, task):
+        self.tasks.extend(task)
+        return self
+
+
+class PowerPoint(object):
+    def __init__(self, source_name: str, target_name: str):
+        self.ppt_app = Dispatch('PowerPoint.Application')
+        self.ppt_app.Visible = 1
+        source_file_path = os.path.join(*(os.getcwd(), source_name))
+        target_file_path = os.path.join(*(os.getcwd(), target_name))
+        self.ppt = self.ppt_app.Presentations.Open(source_file_path)
+        self.target_file_path = target_file_path
+        self.target_name = target_name
+        self.row_num = 2
+        self._cached_cells = {}
+
+    def get_table(self, slide_index, shape_index):
+        return self.ppt.slides[slide_index].shapes[shape_index].Table
+
+    def get_rows(self, slide_index, shape_index):
+        return self.get_table(slide_index, shape_index).Rows
+
+    def _calculate_hash_for_cells(self, slide_index: int, shape_index: int, row_index: int):
+        assert row_index <= self.row_num
+        hash_str = str(hash(slide_index)) + str(hash(shape_index)) + str(hash(row_index))
+        return hash_str
+
+    def _get_cached_cells(self, slide_index, shape_index, row_index):
+        hash_str = self._calculate_hash_for_cells(slide_index, shape_index, row_index)
+        return self._cached_cells.get(hash_str)
+
+    def _set_cached_cells(self, slide_index, shape_index, row_index, cells):
+        hash_str = self._calculate_hash_for_cells(slide_index, shape_index, row_index)
+        return self._cached_cells.update({hash_str: cells})
+
+    def get_cells(self, slide_index=2, shape_index=1, row_index=1):
+        cells = self._get_cached_cells(slide_index, shape_index, row_index)
+        if cells is None:
+            cells = self.get_rows(slide_index, shape_index)[row_index].Cells
+            self._set_cached_cells(slide_index, shape_index, row_index, cells)
+        return cells
+
+    def set_text(self, text, slide_index=2, shape_index=1, row_index=1, column_index=0):
+        assert row_index <= self.row_num + 1
+        self.get_cells(slide_index, shape_index, row_index)[column_index].Shape.TextFrame.TextRange.Text = text
+
+    def get_text(self, slide_index=2, shape_index=1, row_index=1, column_index=0):
+        assert row_index <= self.row_num + 1
+        return self.get_cells(slide_index, shape_index, row_index)[column_index].Shape.TextFrame.TextRange.Text
+
+    def get_cell(self, row_index=1, column_index=0, **kwargs):
+        return self.get_cells(row_index=row_index, **kwargs)[column_index]
+
+    @staticmethod
+    def merge(src_cell, dst_cell):
+        src_cell.Merge(dst_cell)
+
+    @staticmethod
+    def get_attr(obj, obj_type, attr):
+        if obj_type == 'cell':
+            if attr == 'text':
+                return obj.Shape.TextFrame.TextRange.Text
+
+    def _set_table_row_num(self, row_num):
+        assert row_num >= 2
+        self.ppt.slides[2].shapes[1].Table.Rows.Add(2)
+        self.ppt.slides[2].shapes[1].Table.Rows[2].Delete()
+        self.ppt.slides[2].shapes[1].Table.Rows.Add(2)
+        for num in range(0, row_num - 2):
+            self.ppt.slides[2].shapes[1].Table.Rows.Add(2)
+
+    @contextlib.contextmanager
+    def context(self, row_num: int = 2):
+        if row_num < 2 and row_num != 0:
+            row_num = 2
+        self.row_num = row_num
+        if row_num != 0:
+            self._set_table_row_num(row_num)
+        yield self
+        self.ppt.SaveAs(self.target_file_path)
+        self.ppt_app.Quit()
+
+    def get_row_num(self):
+        return self.row_num
+
+    def get_text_frame(self, slide_index, shape_index):
+        shape = self.ppt.slides[slide_index].shapes[shape_index]
+        if shape.HasTextFrame:
+            return shape.TextFrame
+        return None
+
+    def set_user_fullname(self, text, slide_index=2, shape_index=0):
+        text_frame = self.get_text_frame(slide_index, shape_index)
+        if text_frame is not None:
+            old_text = text_frame.TextRange.Text
+            old_text = old_text.replace('X', '').replace('x', '')
+            new_text = '{0}{1}'.format(text, old_text)
+            text_frame.TextRange.Text = new_text
 
 
 class WorkTable(object):
-    def __init__(self, ppt, projects: [], slide_index=2, shape_index=1,
-                 start_row: int = 1, start_column: int = 0, max_column: int = 10):
+    def __init__(self, ppt: PowerPoint, projects: [], slide_index=2, shape_index=1,
+                 start_row: int = 1, start_column: int = 0, max_column: int = 10, user_fullname=''):
         self.ppt = ppt
         self.slide_index = slide_index
         self.shape_index = shape_index
@@ -49,6 +162,7 @@ class WorkTable(object):
         self._columns_num = len(self._columns)
         self._rows_num = len(self._rows)
         self._cached_data = OrderedDict()
+        self.user_fullname = user_fullname
 
     def parse(self):
         columns = []
@@ -140,6 +254,7 @@ class WorkTable(object):
                 for project, parent_task, current_task in self._rows:
                     self.render(project=project, parent_task=parent_task, current_task=current_task)
                 self.merge_cells()
+                self.ppt.set_user_fullname(self.user_fullname, self.slide_index)
             except Exception as e:
                 error_flag = True
                 print(e)
@@ -168,111 +283,45 @@ class ColumnRawData(object):
         return self.render_text
 
 
-class PowerPoint(object):
-    def __init__(self, source_name: str, target_name: str):
-        self.ppt_app = Dispatch('PowerPoint.Application')
-        self.ppt_app.Visible = 1
-        source_file_path = os.path.join(*(os.getcwd(), source_name))
-        target_file_path = os.path.join(*(os.getcwd(), target_name))
-        self.ppt = self.ppt_app.Presentations.Open(source_file_path)
-        self.target_file_path = target_file_path
-        self.target_name = target_name
-        self.row_num = 2
-        self._cached_cells = {}
-
-    def get_table(self, slide_index, shape_index):
-        return self.ppt.slides[slide_index].shapes[shape_index].Table
-
-    def get_rows(self, slide_index, shape_index):
-        return self.get_table(slide_index, shape_index).Rows
-
-    def _calculate_hash_for_cells(self, slide_index: int, shape_index: int, row_index: int):
-        assert row_index <= self.row_num
-        hash_str = str(hash(slide_index)) + str(hash(shape_index)) + str(hash(row_index))
-        return hash_str
-
-    def _get_cached_cells(self, slide_index, shape_index, row_index):
-        hash_str = self._calculate_hash_for_cells(slide_index, shape_index, row_index)
-        return self._cached_cells.get(hash_str)
-
-    def _set_cached_cells(self, slide_index, shape_index, row_index, cells):
-        hash_str = self._calculate_hash_for_cells(slide_index, shape_index, row_index)
-        return self._cached_cells.update({hash_str: cells})
-
-    def get_cells(self, slide_index=2, shape_index=1, row_index=1):
-        cells = self._get_cached_cells(slide_index, shape_index, row_index)
-        if cells is None:
-            cells = self.get_rows(slide_index, shape_index)[row_index].Cells
-            self._set_cached_cells(slide_index, shape_index, row_index, cells)
-        return cells
-
-    def set_text(self, text, slide_index=2, shape_index=1, row_index=1, column_index=0):
-        assert row_index <= self.row_num + 1
-        self.get_cells(slide_index, shape_index, row_index)[column_index].Shape.TextFrame.TextRange.Text = text
-
-    def get_text(self, slide_index=2, shape_index=1, row_index=1, column_index=0):
-        assert row_index <= self.row_num + 1
-        return self.get_cells(slide_index, shape_index, row_index)[column_index].Shape.TextFrame.TextRange.Text
-
-    def get_cell(self, row_index=1, column_index=0, **kwargs):
-        return self.get_cells(row_index=row_index, **kwargs)[column_index]
-
-    @staticmethod
-    def merge(src_cell, dst_cell):
-        src_cell.Merge(dst_cell)
-
-    @staticmethod
-    def get_attr(obj, obj_type, attr):
-        if obj_type == 'cell':
-            if attr == 'text':
-                return obj.Shape.TextFrame.TextRange.Text
-
-    def _set_table_row_num(self, row_num):
-        assert row_num >= 2
-        self.ppt.slides[2].shapes[1].Table.Rows.Add(2)
-        self.ppt.slides[2].shapes[1].Table.Rows[2].Delete()
-        self.ppt.slides[2].shapes[1].Table.Rows.Add(2)
-        for num in range(0, row_num - 2):
-            self.ppt.slides[2].shapes[1].Table.Rows.Add(2)
-
-    @contextlib.contextmanager
-    def context(self, row_num: int = 2):
-        if row_num < 2 and row_num != 0:
-            row_num = 2
-        self.row_num = row_num
-        if row_num != 0:
-            self._set_table_row_num(row_num)
-        yield self
-        self.ppt.SaveAs(self.target_file_path)
-        self.ppt_app.Quit()
-
-    def get_row_num(self):
-        return self.row_num
-
-
 class RedmineInterface(object):
-    def __init__(self, url, key='', start_time='2019-03-01', end_time='2020-03-07'):
-        self.key = key
+    def __init__(self, url, key='', start_time='2019-03-01', end_time='2020-05-07', username='', password=''):
         self.url = url or 'http://192.168.67.129:7777/redmine'
-        self.redmine = Redmine(url, key=key)
+        if key == '':
+            key = None
+        self.key = key
+        self.redmine = Redmine(url, key=key, username=username, password=password)
         self.current = self.redmine.user.get('current')
         self.start_time = start_time
         self.end_time = end_time
+        self.issues = self.redmine.issue.filter(assigned_to_id=str(self.current.id),
+                                                limit=100,
+                                                status_id="*",
+                                                sort='updated_on:desc',
+                                                start_date='><{start_time}|{end_time}'.format(
+                                                    start_time=self.start_time,
+                                                    end_time=self.end_time
+                                                ))
+
+    def _issue_iter(self, issues):
+        for issue in issues:
+            for _issue in self.issues:
+                if issue.id == _issue.id:
+                    yield _issue
 
     def get_projects(self):
-        issues = self.redmine.issue.filter(assigned_to_id=str(self.current.id),
-                                           limit=100,
-                                           status_id="*",
-                                           sort='updated_on:desc',
-                                           start_date='><{start_time}|{end_time}'.format(
-                                               start_time=self.start_time,
-                                               end_time=self.end_time
-                                           ))
         projects = []
-        for issue in issues:
+        for issue in self.issues:
             project_id = issue.project.id
-            task = Task(issue.subject, issue.id, issue.done_ratio, issue.status.name,
-                        getattr(issue, 'start_date', ''), getattr(issue, 'due_date', ''))
+            if getattr(issue, 'parent', None) is None:
+                tasks = [Task(issue.subject, issue.id, issue.done_ratio, issue.status.name,
+                              getattr(issue, 'start_date', ''), getattr(issue, 'due_date', ''))]
+                if len(issue.children):
+                    tasks = [tasks[0].append_task(
+                        Task(_issue.subject, _issue.id, _issue.done_ratio, _issue.status.name,
+                             getattr(_issue, 'start_date', ''), getattr(_issue, 'due_date', ''))
+                    ) for _issue in self._issue_iter(issue.children)]
+            else:
+                tasks = []
             project = None
             for _project in projects:
                 if _project.uid == project_id:
@@ -280,8 +329,11 @@ class RedmineInterface(object):
             if project is None:
                 project = Project(issue.project.name, project_id, [])
                 projects.append(project)
-            project.append_task(task)
+            project.extend_task(tasks)
         return projects
+
+    def get_current_user_fullname(self):
+        return '{0}{1}'.format(self.current.lastname, self.current.firstname)
 
 
 def generate_projects(*args, **kwargs):
@@ -290,21 +342,32 @@ def generate_projects(*args, **kwargs):
     return projects
 
 
+def get_current_user_fullname(*args, **kwargs):
+    redmine = RedmineInterface(*args, **kwargs)
+    return redmine.get_current_user_fullname()
+
+
 def process(*args, **kwargs):
     power_point = PowerPoint("template.pptx", "release.pptx")
-    work_table = WorkTable(power_point, generate_projects(*args, **kwargs))
+    work_table = WorkTable(power_point, generate_projects(*args, **kwargs),
+                           user_fullname=get_current_user_fullname(*args, **kwargs))
     work_table.process()
 
 
 @click.command()
 @click.option("--url", default='http://spdm/redmine/',
               help="server address example: http://192.168.67.129:7777/redmine")
-@click.option("--key", default='', help="access token")
-@click.option("--start_time", default='2019-03-01', help="task start time example:2019-03-01")
-@click.option("--end_time", default='2020-03-07', help="task end time example:2020-03-07")
-def gen_ppt(url, key, start_time, end_time):
+@click.option("--key", default='', help="SPDM access token")
+@click.option("--username", default='', help="SPDM username")
+@click.option("--password", default='', help="SPDM password")
+@click.option("--start_time", help="task start time example:2019-03-01", required=True)
+@click.option("--end_time", help="task end time example:2020-05-07", required=True)
+def gen_ppt(url, key, start_time, end_time, username, password):
     """Generate Powerpoint"""
-    process(url=url, key=key, start_time=start_time, end_time=end_time)
+    try:
+        process(url=url, key=key, start_time=start_time, end_time=end_time, username=username, password=password)
+    except Exception as e:
+        click.echo(str(e))
 
 
 if __name__ == '__main__':

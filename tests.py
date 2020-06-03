@@ -44,9 +44,25 @@ class TestWorkTable(object):
         projects.extend(projects3)
         return projects
 
+    @staticmethod
+    def generate_test_projects_with_child_projects():
+        tasks = [Task('test_task' + str(i), i, i * 10, 'prepare', '2020/05/08', '2020/05/10') for i in range(0, 3)]
+        projects = [Project('test_project' + str(i), i, tasks) for i in range(0, 2)]
+        tasks = [Task('test_task' + str(i), i, i * 10, 'prepare', '2020/05/08', '2020/05/10') for i in range(0, 2)]
+        tasks = [task.append_task(Task('test_task' + str(i+100), i, i * 10, 'prepare', '2020/05/08', '2020/05/10'))
+                 for i, task in enumerate(tasks)]
+        projects1 = [Project('test_project' + str(i + 3), i, tasks) for i in range(0, 2)]
+        projects.extend(projects1)
+        return projects
+
     def test_process(self):
         power_point = PowerPoint("test.pptx", "new2.pptx")
         work_table = WorkTable(power_point, self.generate_test_projects())
+        work_table.process()
+
+    def test_process1(self):
+        power_point = PowerPoint("test.pptx", "new4.pptx")
+        work_table = WorkTable(power_point, self.generate_test_projects_with_child_projects())
         work_table.process()
 
 
@@ -71,5 +87,9 @@ class TestCmd(object):
                                ['--key',
                                 '5f4821802e9cd29fb2ac54a13fc98d15e760b865',
                                 '--url',
-                                'http://192.168.67.129:7777/redmine'])
+                                'http://192.168.67.129:7777/redmine',
+                                '--start_time',
+                                '2019-03-01',
+                                '--end_time',
+                                '2020-05-07'])
         assert result.exit_code == 0

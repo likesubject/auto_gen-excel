@@ -2,80 +2,84 @@
 
 from click.testing import CliRunner
 
-from main import (PowerPoint, WorkTable, Task, Project, RedmineInterface, gen_ppt)
+from main import (ExcelAdapter, ColumnRawData, WorkTable, RedmineAdapter, gen_excel)
 
 
 class TestPowerpoint(object):
     def test_insert_table_and_text(self):
-        power_point = PowerPoint("test.pptx", "new1.pptx")
+        excel_proxy = ExcelAdapter("template.xlsx", "release1.xlsx")
         error_flag = False
-        with power_point.context(7) as ppt:
+        with excel_proxy.context() as excel:
             try:
-                column_num = len(ppt.get_cells())
-                row_num = ppt.get_row_num()
-                print((column_num, row_num))
-                for row_index in range(1, row_num ):
-                    for column_index in range(1, column_num):
-                        ppt.set_text('row:{0},column:{1}'.format(row_index, column_index),
-                                     row_index=row_index, column_index=column_index)
-                src_cell = ppt.get_cell(1, 0)
-                dst_cell = ppt.get_cell(2, 0)
-                ppt.merge(src_cell, dst_cell)
+                for row_index in range(2, 10):
+                    for column_index in range(1, 10):
+                        excel.set_text('row:{0},column:{1}'.format(row_index, column_index),
+                                       row_index=row_index, column_index=column_index)
+                src_cell = excel.get_cell(1, 1)
+                dst_cell = excel.get_cell(2, 1)
+                excel.merge(src_cell, dst_cell)
             except Exception as e:
                 error_flag = True
                 print(e)
 
         assert not error_flag
 
+    def test_get_template_content(self):
+        excel_proxy = ExcelAdapter("template.xlsx", "release2.xlsx")
+        columns = []
+        with excel_proxy.context() as excel:
+            for column_index, first_row_cell in enumerate(excel.get_cells(row_index=1)):
+                second_row_cell = excel.get_cell(column_index=column_index + 1, row_index=2)
+                columns.append(ColumnRawData(column_index + 1,
+                                             first_row_cell.get_text(),
+                                             second_row_cell.get_text(),
+                                             excel))
+        print(columns)
+        assert len(columns) == 7
 
-class TestWorkTable(object):
+
+class TestRedmineAdapter(object):
+    def test_generate_projects_with_month(self):
+        redmine = RedmineAdapter('http://192.168.67.132:7777/redmine',
+                                 key='5f4821802e9cd29fb2ac54a13fc98d15e760b865',
+                                 month=6)
+        projects = redmine.get_projects()
+        _projects = []
+        _projects.extend(projects.projects)
+        assert len(_projects) >= 1
+
+    def test_generate_projects_with_month_and_year(self):
+        redmine = RedmineAdapter('http://192.168.67.132:7777/redmine',
+                                 key='5f4821802e9cd29fb2ac54a13fc98d15e760b865',
+                                 month=6,
+                                 year=2019)
+        projects = redmine.get_projects()
+        _projects = []
+        _projects.extend(projects.projects)
+        assert len(_projects) == 0
+
     @staticmethod
     def generate_test_projects():
-        tasks = [Task('test_task' + str(i), i, i * 10, 'prepare', '2020/05/08', '2020/05/10') for i in range(0, 3)]
-        projects = [Project('test_project' + str(i), i, tasks) for i in range(0, 2)]
-        tasks = [Task('test_task' + str(i), i, i * 10, 'prepare', '2020/05/08', '2020/05/10') for i in range(0, 2)]
-        projects1 = [Project('test_project' + str(i + 3), i, tasks) for i in range(0, 2)]
-        projects.extend(projects1)
-        tasks = [Task('test_task' + str(i), i, i * 10, 'prepare', '2020/05/08', '2020/05/10') for i in range(0, 1)]
-        projects2 = [Project('test_project' + str(i + 5), i, tasks) for i in range(0, 2)]
-        projects.extend(projects2)
-        tasks = [Task('test_task' + str(i), i, i * 10, 'prepare', '2020/05/08', '2020/05/10') for i in range(0, 3)]
-        projects3 = [Project('test_project' + str(i + 8), i, tasks) for i in range(0, 2)]
-        projects.extend(projects3)
-        return projects
-
-    @staticmethod
-    def generate_test_projects_with_child_projects():
-        tasks = [Task('test_task' + str(i), i, i * 10, 'prepare', '2020/05/08', '2020/05/10') for i in range(0, 3)]
-        projects = [Project('test_project' + str(i), i, tasks) for i in range(0, 2)]
-        tasks = [Task('test_task' + str(i), i, i * 10, 'prepare', '2020/05/08', '2020/05/10') for i in range(0, 2)]
-        tasks = [task.append_task(Task('test_task' + str(i+100), i, i * 10, 'prepare', '2020/05/08', '2020/05/10'))
-                 for i, task in enumerate(tasks)]
-        projects1 = [Project('test_project' + str(i + 3), i, tasks) for i in range(0, 2)]
-        projects.extend(projects1)
-        return projects
-
-    def test_process(self):
-        power_point = PowerPoint("test.pptx", "new2.pptx")
-        work_table = WorkTable(power_point, self.generate_test_projects())
-        work_table.process()
-
-    def test_process1(self):
-        power_point = PowerPoint("test.pptx", "new4.pptx")
-        work_table = WorkTable(power_point, self.generate_test_projects_with_child_projects())
-        work_table.process()
-
-
-class TestRedmine(object):
-    @staticmethod
-    def generate_test_projects():
-        redmine = RedmineInterface('http://192.168.67.129:7777/redmine',
-                                   key='5f4821802e9cd29fb2ac54a13fc98d15e760b865')
+        redmine = RedmineAdapter('http://192.168.67.132:7777/redmine',
+                                 key='5f4821802e9cd29fb2ac54a13fc98d15e760b865')
         projects = redmine.get_projects()
         return projects
 
+    def test_get_projects(self):
+        projects = self.generate_test_projects().projects
+        _projects = []
+        _projects.extend(projects)
+        assert len(_projects) >= 1
+
+    def test_get_spent_times(self):
+        projects = self.generate_test_projects()
+        for project in projects.projects:
+            for user in project.users:
+                spent_time = user.spent_time
+                print(project, user, user.fullname, spent_time)
+
     def test_process(self):
-        power_point = PowerPoint("test.pptx", "new3.pptx")
+        power_point = ExcelAdapter("template.xlsx", "release3.xlsx")
         work_table = WorkTable(power_point, self.generate_test_projects())
         work_table.process()
 
@@ -83,13 +87,24 @@ class TestRedmine(object):
 class TestCmd(object):
     def test_gen_ppt(self):
         runner = CliRunner()
-        result = runner.invoke(gen_ppt,
+        result = runner.invoke(gen_excel,
                                ['--key',
                                 '5f4821802e9cd29fb2ac54a13fc98d15e760b865',
                                 '--url',
-                                'http://192.168.67.129:7777/redmine',
-                                '--start_time',
-                                '2019-03-01',
-                                '--end_time',
-                                '2020-05-07'])
+                                'http://192.168.67.132:7777/redmine',
+                                '--month',
+                                '6'])
+        assert result.exit_code == 0
+
+    def test_gen_ppt_with_year(self):
+        runner = CliRunner()
+        result = runner.invoke(gen_excel,
+                               ['--key',
+                                '5f4821802e9cd29fb2ac54a13fc98d15e760b865',
+                                '--url',
+                                'http://192.168.67.132:7777/redmine',
+                                '--month',
+                                '6',
+                                '--year',
+                                '2016'])
         assert result.exit_code == 0

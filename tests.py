@@ -5,6 +5,9 @@ from click.testing import CliRunner
 from main import (ExcelAdapter, ColumnRawData, WorkTable, RedmineAdapter, gen_excel)
 
 
+TEST_REDMINE_URL = 'http://192.168.67.133:7777/redmine'
+
+
 class TestPowerpoint(object):
     def test_insert_table_and_text(self):
         excel_proxy = ExcelAdapter("template.xlsx", "release1.xlsx")
@@ -40,7 +43,7 @@ class TestPowerpoint(object):
 
 class TestRedmineAdapter(object):
     def test_generate_projects_with_month(self):
-        redmine = RedmineAdapter('http://192.168.67.132:7777/redmine',
+        redmine = RedmineAdapter(TEST_REDMINE_URL,
                                  key='5f4821802e9cd29fb2ac54a13fc98d15e760b865',
                                  month=6)
         projects = redmine.get_projects()
@@ -49,7 +52,7 @@ class TestRedmineAdapter(object):
         assert len(_projects) >= 1
 
     def test_generate_projects_with_month_and_year(self):
-        redmine = RedmineAdapter('http://192.168.67.132:7777/redmine',
+        redmine = RedmineAdapter(TEST_REDMINE_URL,
                                  key='5f4821802e9cd29fb2ac54a13fc98d15e760b865',
                                  month=6,
                                  year=2019)
@@ -60,7 +63,7 @@ class TestRedmineAdapter(object):
 
     @staticmethod
     def generate_test_projects():
-        redmine = RedmineAdapter('http://192.168.67.132:7777/redmine',
+        redmine = RedmineAdapter(TEST_REDMINE_URL,
                                  key='5f4821802e9cd29fb2ac54a13fc98d15e760b865')
         projects = redmine.get_projects()
         return projects
@@ -91,7 +94,7 @@ class TestCmd(object):
                                ['--key',
                                 '5f4821802e9cd29fb2ac54a13fc98d15e760b865',
                                 '--url',
-                                'http://192.168.67.132:7777/redmine',
+                                TEST_REDMINE_URL,
                                 '--month',
                                 '6'])
         assert result.exit_code == 0
@@ -102,9 +105,39 @@ class TestCmd(object):
                                ['--key',
                                 '5f4821802e9cd29fb2ac54a13fc98d15e760b865',
                                 '--url',
-                                'http://192.168.67.132:7777/redmine',
+                                TEST_REDMINE_URL,
                                 '--month',
                                 '6',
                                 '--year',
                                 '2016'])
+        assert result.exit_code == 0
+
+    def test_gen_ppt_with_project1(self):
+        runner = CliRunner()
+        result = runner.invoke(gen_excel,
+                               ['--username',
+                                'like',
+                                '--password',
+                                '6976630670',
+                                '--url',
+                                TEST_REDMINE_URL,
+                                '--month',
+                                '6',
+                                '--project',
+                                'spd'])
+        assert result.exit_code == 0
+
+    def test_gen_ppt_with_project2(self):
+        runner = CliRunner()
+        result = runner.invoke(gen_excel,
+                               ['--username',
+                                'like',
+                                '--password',
+                                '6976630670',
+                                '--url',
+                                TEST_REDMINE_URL,
+                                '--month',
+                                '6',
+                                '--project',
+                                'test_project1'])
         assert result.exit_code == 0

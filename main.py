@@ -1,19 +1,25 @@
 # -- coding: utf-8 --
 
+import calendar
 import contextlib
+import datetime
+import json
 import logging
 import os
-import datetime
-import calendar
 from collections import OrderedDict
 from typing import Generator
 
 import click
+import requests
 from jinja2 import Template
+from lxml import html
 from openpyxl import load_workbook
 from redminelib import Redmine
+from win32com.client import Dispatch
+
 
 logger = logging.getLogger(__name__)
+etree = html.etree
 
 
 class LocalResourceBase(object):
@@ -43,6 +49,9 @@ class LocalResourceBase(object):
     def extend_resource(self, resources):
         for resource in resources:
             self.append_resource(resource)
+
+    def clear_resource(self):
+        self._resources = {}
 
     @property
     def resources(self):
@@ -149,6 +158,7 @@ class User(LocalResourceBase):
             spent_time = 0
             for task in self.tasks:
                 spent_time += task.spent_time
+            spent_time = round(spent_time / 8.0, 2)
             self.cache_data('spent_time', spent_time)
         return spent_time
 
@@ -179,6 +189,10 @@ class Project(LocalResourceBase):
         :return: User instance
         """
         return super(Project, self).get_resource(remote_user, User)
+
+    @property
+    def parent_id(self):
+        return getattr(self.parent, 'id', None)
 
 
 class Users(LocalResourceBase):
@@ -214,6 +228,9 @@ class Projects(LocalResourceBase):
         """
         return super(Projects, self).get_resource(remote_project, Project)
 
+    def get_project_by_project_id(self, project_id):
+        return super(Projects, self).get_resource_by_uid(project_id)
+
 
 class CustomCell(object):
     def __init__(self, adapter, row_index, column_index):
@@ -245,6 +262,9 @@ class ExcelAdapter(object):
         self.source_file_path = source_file_path
         self.target_file_path = target_file_path
         self.current_workbook = None
+        self.error_flag = False
+        self.source_name = source_name
+        self.target_name = target_name
 
     def set_text(self, text, row_index=1, column_index=1):
         self.current_workbook.cell(column=column_index, row=row_index, value=text)
@@ -270,7 +290,16 @@ class ExcelAdapter(object):
         template_workbook = load_workbook(filename=self.source_file_path)
         self.current_workbook = template_workbook.active
         yield self
-        template_workbook.save(self.target_file_path)
+        if not self.error_flag:
+            template_workbook.save(self.target_file_path)
+
+    def set_error_flag(self):
+        self.error_flag = True
+
+    def open_excel_for_windows(self):
+        excel_app = Dispatch('Excel.Application')
+        excel_app.Visible = 1
+        excel_app.Workbooks.Open(self.target_file_path)
 
 
 class WorkTable(object):
@@ -369,21 +398,29 @@ class WorkTable(object):
                 yield (project, user)
 
     def process(self):
-        error_flag = False
-        click.echo('Step two: Generating Excel,please waiting....')
+        error_flag = True
+        click.echo('Step three: Generating Excel,please waiting....')
         with self.adapter.context():
             self._columns = self.parse()
             self._cached_data.extend([OrderedDict() for i in self._columns])
             try:
                 with click.progressbar(self._rows) as bar:
                     for project, user in bar:
+                        error_flag = False
                         self.render(project=project, current_user=user)
                 self.merge_all_cells()
+                if error_flag:
+                    self.adapter.set_error_flag()
+                    raise ValueError('Unsuccessfully generated , no data was generated!!!')
             except Exception as e:
-                error_flag = True
-                print(e)
+                self.adapter.set_error_flag()
+                click.echo(str(e))
         if error_flag:
             raise Exception
+        else:
+            click.echo('Successfully generated, please open `{0}` file under the `work table` dir'.
+                       format(self.adapter.target_name))
+            self.adapter.open_excel_for_windows()
 
 
 class ColumnRawData(object):
@@ -407,6 +444,12 @@ class ColumnRawData(object):
         return self.render_text
 
 
+class CustomRemoteProject(object):
+    def __init__(self, id, name):
+        self.id = id
+        self.name = name
+
+
 class RedmineAdapter(object):
     def __init__(self, url, key='', year=0, month=None,
                  from_date='2020-06-16', to_date='2020-06-30', username='', password=''):
@@ -414,6 +457,8 @@ class RedmineAdapter(object):
         if key == '':
             key = None
         self.key = key
+        self.username = username
+        self.password = password
         self.redmine = Redmine(url, key=key, username=username, password=password)
         self.current = self.redmine.user.get('current')
         if month is None:
@@ -429,6 +474,37 @@ class RedmineAdapter(object):
             first_day, last_day = self.get_month_first_day_and_last_day(year=year, month=month)
             self.from_date = str(first_day)
             self.to_date = str(last_day)
+
+        if self.key is None:
+            try:
+                self.custom_session = self.create_custom_session()
+            except Exception as e:
+                self.custom_session = None
+            if self.custom_session is None:
+                click.echo('Warming: SPDM simulated user login failure, unable to use the project filtering function')
+            else:
+                click.echo('Info: SPDM simulates successful login of the user')
+        else:
+            self.custom_session = None
+            click.echo('Warming: Current using token unable to use the project filtering function')
+
+    def create_custom_session(self):
+        login_url = '{0}/login'.format(self.redmine.url)
+        session = requests.session()
+        result = session.get(login_url)
+        auth_data = {
+            'username': self.username,
+            'password': self.password,
+        }
+        if result.status_code == 200:
+            login_html = etree.HTML(result.content, etree.HTMLParser())
+            result = login_html.xpath('//input[@name="authenticity_token"]/./@value')
+            if len(result) == 1:
+                auth_data.update(authenticity_token=result[0])
+                result = session.post(login_url, data=auth_data)
+                if result.status_code == 200:
+                    return session
+        return None
 
     @staticmethod
     def get_month_first_day_and_last_day(year=None, month=None):
@@ -461,7 +537,26 @@ class RedmineAdapter(object):
                                                     to_date=self.to_date)
         return work_times
 
-    def get_projects(self):
+    def get_project_by_identifier(self, identifier):
+        """
+        get project object
+        :param identifier: id or string
+        :return: project object
+        """
+        return self.redmine.project.get(identifier)
+
+    def get_project_by_name(self, name):
+        try:
+            identifier = int(name)
+        except ValueError:
+            identifier = None
+        if identifier is not None and isinstance(identifier, int):
+            project = self.get_project_by_identifier(identifier)
+        else:
+            project = self.get_project_by_identifier(name)
+        return project
+
+    def _get_projects(self):
         stacks = [0]
         projects = Projects(self.redmine)
         work_times = []
@@ -497,15 +592,71 @@ class RedmineAdapter(object):
             pass
         return projects
 
+    def _get_sub_projects(self, project_id):
+        sub_project_url = '{0}/projects/{1}/children'.format(self.redmine.url, project_id)
+        try:
+            response = self.custom_session.get(sub_project_url)
+        except Exception as e:
+            response = None
+        if response and response.status_code == 200:
+            items = json.loads(response.content)
+            projects = items.get('children')
+            return [CustomRemoteProject(project.get('id'), project.get('name')) for project in projects]
+        return []
+
+    def get_sub_projects(self, project):
+        stack = [project]
+        projects = []
+        while True:
+            try:
+                current_project = stack.pop()
+                if current_project not in projects:
+                    yield current_project
+                    projects.append(current_project)
+            except IndexError:
+                return
+            stack.extend(self._get_sub_projects(current_project.id))
+
+    def get_projects(self, redmine_project=None):
+        projects = self._get_projects()
+        if redmine_project is not None and self.custom_session is not None:
+            projects = self.checkout_projects(projects, redmine_project)
+        else:
+            click.echo('Warming: Ignore project')
+        return projects
+
+    def checkout_projects(self, src_projects, redmine_project):
+        try:
+            entry_project = self.get_project_by_name(redmine_project)
+        except Exception as e:
+            entry_project = None
+        if redmine_project is not None and entry_project is None:
+            raise ValueError('The item named `{0}` could not be found'.format(redmine_project))
+        click.echo('Locate the {0} project'.format(entry_project.name))
+        sub_projects = self.get_sub_projects(entry_project)
+        click.echo('Step two: Checkout projects,please waiting....')
+        projects = []
+        tests = []
+        with click.progressbar(sub_projects) as bar:
+            for dst_project in bar:
+                tests.append(dst_project)
+                project = src_projects.get_project_by_project_id(dst_project.id)
+                if project is not None:
+                    projects.append(project)
+            src_projects.clear_resource()
+            src_projects.extend_resource(projects)
+        return src_projects
+
     def get_current_user_fullname(self):
         return '{0}{1}'.format(self.current.lastname, self.current.firstname)
 
 
 def process(*args, **kwargs):
     enable_merge_cells = kwargs.pop('enable_merge_cells', True)
+    redmine_project = kwargs.pop('project', None)
 
     redmine = RedmineAdapter(*args, **kwargs)
-    projects = redmine.get_projects()
+    projects = redmine.get_projects(redmine_project=redmine_project)
 
     adapter = ExcelAdapter("template.xlsx", "{0}--{1} created on {2}.xlsx".
                            format(redmine.from_date,
@@ -523,12 +674,13 @@ def process(*args, **kwargs):
 @click.option("--password", default='', help="SPDM password")
 @click.option("--year", help="Statistical year,the default this year", default=0, type=click.IntRange(0, 9999))
 @click.option("--month", help="Statistical month", required=True, type=click.IntRange(1, 12))
-@click.option("--disable-merge-cells", default=True, help="enable merge cells", is_flag=True)
-def gen_excel(url, key, year, month, username, password, disable_merge_cells):
+@click.option("--enable-merge-cells", default=False, help="enable merge cells", is_flag=True)
+@click.option("--project", default=None, help="SPDM project identifier")
+def gen_excel(url, key, year, month, username, password, enable_merge_cells, project):
     """Generate Excel"""
     try:
         process(url=url, key=key, year=year, month=month,
-                username=username, password=password, enable_merge_cells=disable_merge_cells)
+                username=username, password=password, enable_merge_cells=enable_merge_cells, project=project)
     except Exception as e:
         click.echo(str(e))
 

@@ -1,4 +1,4 @@
-Jinja2==2.11.2
+Jinja2==2.11.3
 openpyxl==3.0.3
 pytest
 python-redmine
